@@ -3,8 +3,21 @@ const qrcode = require('qrcode-terminal');
 const path = require('path');
 const fs = require('fs');
 const pino = require('pino');
+const express = require('express');
 
-// பயனர்களின் முன்பதிவு நிலை மற்றும் மொழி விருப்பத்தை (Language Preference) சேமிக்க
+// Express server setup for Render port binding (Prevents deployment drops)
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('Rajeshwari Nutrition Center WhatsApp Bot is Running Live!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Server is listening on port ${PORT}`);
+});
+
+// பயனர்களின் முன்பதிவு நிலை மற்றும் மொழி விருப்பத்தை சேமிக்க
 const userSessions = {};
 
 // 🔴 அட்மின் வாட்ஸ்அப் நம்பர் (7200537033)
@@ -16,20 +29,23 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false
+        printQRInTerminal: true
     });
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-            console.log('SCAN THIS QR CODE TO LOGIN WITH YOUR WHATSAPP:');
+            console.log('SCAN THIS QR CODE TO LOGIN:');
             qrcode.generate(qr, { small: true });
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) connectToWhatsApp();
+            console.log('Connection closed. Reconnecting...', shouldReconnect);
+            if (shouldReconnect) {
+                connectToWhatsApp();
+            }
         } else if (connection === 'open') {
-            console.log('WhatsApp Bot is ready with Strict Language Session & Last Contact Option!');
+            console.log('WhatsApp Bot is ready and successfully connected on Render!');
         }
     });
 
@@ -52,7 +68,6 @@ async function connectToWhatsApp() {
         const text = userMessage.trim();
         const lowerText = text.toLowerCase();
 
-        // புதிய பயனராக இருந்தால் மொழியைக் கண்டறிந்து சேமித்தல் (Session Creation)
         if (!userSessions[chatId]) {
             const isTamilInput = /[\u0B80-\u0BFF]/.test(text) || lowerText.includes('வணக்கம்') || lowerText.includes('சேவைகள்') || lowerText.includes('ஊட்டச்சத்து');
             userSessions[chatId] = {
@@ -63,7 +78,7 @@ async function connectToWhatsApp() {
 
         const currentLang = userSessions[chatId].language;
 
-        // 1. முன்பதிவு நிலை நடந்து கொண்டிருந்தால் அதை நிர்வகித்தல்
+        // 1. முன்பதிவு நிலை (Appointment State)
         if (userSessions[chatId].step) {
             const currentState = userSessions[chatId].step;
 
@@ -83,25 +98,22 @@ async function connectToWhatsApp() {
                 const appointmentTime = text;
                 const userPhone = chatId.split('@')[0];
 
-                // வாடிக்கையாளருக்கு உறுதிப்படுத்தல் செய்தி (Success Message)
                 const successText = (currentLang === 'ta') ?
                     `🎉 *வாழ்த்துகள்! உங்களது உடல் பரிசோதனை முன்பதிவு வெற்றிகரமாக உறுதி செய்யப்பட்டது!* 🎉\n\n👤 **பெயர்:** ${userName}\n⏰ **நேரம்:** ${appointmentTime}\n📍 **இடம்:** ராஜேஷ்வரி நியூட்ரிஷன் சென்டர், சேலம் மெயின் ரோடு அருகில், கள்ளக்குறிச்சி.\n\nஉங்களின் ஆரோக்கிய பயணத்தில் உங்களைச் சந்திப்பதில் பெருமகிழ்ச்சி அடைகிறோம்!` :
                     `🎉 *Congratulations! Your Appointment is Successfully Confirmed!* 🎉\n\n👤 **Name:** ${userName}\n⏰ **Time Slot:** ${appointmentTime}\n📍 **Location:** Rajeshwari Nutrition Center, Near Salem Main Road, Kallakurichi.\n\nWe are excited to welcome you on your wellness journey!`;
 
                 await sock.sendMessage(chatId, { text: successText });
 
-                // 🔴 அட்மினுக்கு (7200537033) முன்பதிவு விவரங்களை அனுப்புதல்
                 const adminAlertText = `🔔 *புதிய உடல் பரிசோதனை முன்பதிவு வந்துள்ளது!* 🔔\n\n👤 **வாடிக்கையாளர் பெயர்:** ${userName}\n📞 **போன் நம்பர்:** +${userPhone}\n⏰ **குறிக்கப்பட்ட நேரம்:** ${appointmentTime}\n\nதயவுசெய்து கவனிக்கவும்!`;
                 await sock.sendMessage(ADMIN_PHONE, { text: adminAlertText });
 
-                // நிலையை மீட்டமைத்தல் (Reset Step)
                 userSessions[chatId].step = null;
                 delete userSessions[chatId].name;
                 return;
             }
         }
 
-        // 2. முன்பதிவு தொடங்குவதற்கான தூண்டுதல் (Trigger) - Option 5
+        // 2. முன்பதிவு தூண்டுதல் (Trigger - Option 5)
         if (lowerText.includes('appointment') || lowerText.includes('book') || lowerText.includes('பரிசோதனை') || lowerText.includes('முன்பதிவு') || lowerText === '5') {
             userSessions[chatId].step = 'WAITING_FOR_NAME';
             const bookPrompt = (currentLang === 'ta') ?
@@ -112,7 +124,6 @@ async function connectToWhatsApp() {
             return;
         }
 
-        // Helper function for sending images with captions
         async function sendMediaMessage(subFolder, imageName, captionText) {
             try {
                 const imagePath = path.join(__dirname, 'images', subFolder, imageName);
@@ -127,9 +138,8 @@ async function connectToWhatsApp() {
             }
         }
 
-        // 3. Welcome Message (Unique & Language Based)
+        // 3. Welcome Message
         if (lowerText === 'hi' || lowerText === 'hello' || lowerText === 'menu' || lowerText === 'start' || lowerText === 'வணக்கம்' || lowerText === 'vanakkam') {
-            // புதிய மெசேஜுக்கு ஏற்ப மொழியை ரீ-செட் செய்ய
             const isTamilInput = /[\u0B80-\u0BFF]/.test(text) || lowerText.includes('வணக்கம்');
             userSessions[chatId].language = isTamilInput ? 'ta' : 'en';
             const lang = userSessions[chatId].language;
@@ -143,7 +153,7 @@ async function connectToWhatsApp() {
             return;
         }
 
-        // 4. Core Features (Strictly based on session language)
+        // 4. Core Features
         if (lowerText.includes('services') || lowerText.includes('சேவைகள்') || lowerText === '1') {
             const serviceText = (currentLang === 'ta') ?
                 `🌱 **எங்கள் முதன்மைச் சேவைகள்** 🌱\n\nஹெர்பலைஃப் நியூட்ரிஷன் மூலம் உங்களின் ஆரோக்கிய இலக்குகளை எட்ட நாங்கள் வழங்கும் பிரத்யேக சேவைகள்:\n• தனிப்பயனாக்கப்பட்ட உடல் எடை குறைப்பு திட்டங்கள்\n• ஆரோக்கியமான உடல் எடை மற்றும் தசை அதிகரிப்பு\n• காலை நேர சமூக உடற்பயிற்சி வகுப்புகள்\n• நவீன உடல் கட்டமைப்பு (Metabolic) பரிசோதனை` :
@@ -193,7 +203,6 @@ async function connectToWhatsApp() {
             await sock.sendMessage(chatId, { text: contactText });
         }
         else {
-            // 5. Fallback Message (Language Specific)
             const fallbackText = (currentLang === 'ta') ?
                 `மன்னிக்கவும், எனக்கு அது புரியவில்லை. மீண்டும் மெனுவைக் காண **'Hi'** அல்லது **'Menu'** என அனுப்பவும்.` :
                 `I'm sorry, I didn't understand that. To view the main menu again, please send **'Hi'** or **'Menu'**.`;
